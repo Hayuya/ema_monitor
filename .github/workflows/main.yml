@@ -1,9 +1,9 @@
-name: EMA承認・治験監視アプリ
+name: CBP501三相治験監視
 
 on:
   schedule:
-    # 毎時0分に実行 (UTC時間)
-    - cron: '0 * * * *'
+    # 15分ごとに実行 (UTC時間)
+    - cron: '*/15 * * * *'
   
   # 手動実行も可能にする
   workflow_dispatch:
@@ -13,9 +13,14 @@ on:
         required: false
         default: 'false'
         type: boolean
+      force_status_report:
+        description: '強制ステータス報告'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
-  monitor-ema:
+  monitor-cbp501:
     runs-on: ubuntu-latest
     
     steps:
@@ -40,23 +45,27 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: 🗂️ 前回チェックデータの復元
+    - name: 🗂️ 前回データの復元
       uses: actions/cache@v3
       with:
-        path: last_check.txt
-        key: ema-monitor-lastcheck-${{ github.run_number }}
+        path: |
+          execution_counter.txt
+          cbp501_status.txt
+        key: cbp501-monitor-data-${{ github.run_number }}
         restore-keys: |
-          ema-monitor-lastcheck-
+          cbp501-monitor-data-
     
-    - name: 🏥 EMA監視アプリの実行
+    - name: 🧬 CBP501監視アプリの実行
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        CHECK_INTERVAL_HOURS: 1
-        MAX_NEWS_ITEMS: 15
+        STATUS_REPORT_INTERVAL: '4'  # 4回に1回（1時間ごと）にステータス報告
         DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
+        FORCE_STATUS_REPORT: ${{ github.event.inputs.force_status_report || 'false' }}
       run: |
-        echo "🚀 EMA監視アプリを開始します..."
+        echo "🧬 CBP501三相治験監視アプリを開始します..."
         echo "⏰ 実行時刻: $(date)"
+        echo "🔄 実行回数: ${{ github.run_number }}"
+        echo "🎯 監視対象: CBP501三相治験開始情報"
         
         if [ "$DEBUG_MODE" = "true" ]; then
           echo "🔍 デバッグモードで実行中..."
@@ -65,22 +74,26 @@ jobs:
           python main.py
         fi
         
-        echo "✅ EMA監視アプリが完了しました"
+        echo "✅ CBP501監視アプリが完了しました"
     
     - name: 📊 実行結果の確認
       if: always()
       run: |
         echo "📋 実行ログの概要:"
-        if [ -f "ema_monitor.log" ]; then
+        if [ -f "cbp501_monitor.log" ]; then
           echo "ログファイルが見つかりました"
           echo "最後の10行:"
-          tail -10 ema_monitor.log
+          tail -10 cbp501_monitor.log
         else
           echo "ログファイルが見つかりません"
         fi
         
-        if [ -f "last_check.txt" ]; then
-          echo "前回チェックファイル: $(cat last_check.txt)"
+        if [ -f "execution_counter.txt" ]; then
+          echo "実行回数: $(cat execution_counter.txt)"
+        fi
+        
+        if [ -f "cbp501_status.txt" ]; then
+          echo "CBP501ステータス: $(cat cbp501_status.txt)"
         fi
     
     - name: 🔗 Discord通知テスト（初回実行時）
@@ -96,22 +109,27 @@ jobs:
         if webhook_url:
             payload = {
                 'embeds': [{
-                    'title': '🤖 EMA監視アプリ起動完了',
-                    'description': 'GitHub Actionsによる自動監視が開始されました！\n\n📅 毎時0分に新薬承認・治験情報をチェックします\n🎯 cbp501などの治験情報も監視対象です',
-                    'color': 0x00FF00,
+                    'title': '🧬 CBP501監視システム起動完了',
+                    'description': 'CBP501三相治験監視システムが開始されました！\n\n🎯 **監視対象**: CBP501の三相治験開始情報\n⏰ **監視間隔**: 15分ごと\n📊 **報告頻度**: 1時間ごと',
+                    'color': 0x0099FF,
                     'timestamp': datetime.utcnow().isoformat(),
                     'footer': {
-                        'text': 'EMA Monitor - GitHub Actions'
+                        'text': 'CBP501 Phase III Trial Monitor'
                     },
                     'fields': [
                         {
-                            'name': '🔄 実行間隔',
-                            'value': '1時間ごと',
+                            'name': '🔍 検索キーワード',
+                            'value': 'CBP501, Phase III, Phase 3, 三相治験',
                             'inline': True
                         },
                         {
-                            'name': '🎯 監視対象',
-                            'value': 'EMA承認情報・治験情報',
+                            'name': '📡 監視頻度',
+                            'value': '15分ごと',
+                            'inline': True
+                        },
+                        {
+                            'name': '📊 報告タイミング',
+                            'value': '情報発見時＋1時間ごと',
                             'inline': True
                         }
                     ]
@@ -120,7 +138,7 @@ jobs:
             
             response = requests.post(webhook_url, json=payload)
             if response.status_code == 204:
-                print('✅ 起動通知の送信に成功しました')
+                print('✅ CBP501監視システム起動通知の送信に成功しました')
             else:
                 print(f'❌ 起動通知の送信に失敗: {response.status_code}')
         else:
@@ -131,15 +149,17 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v3
       with:
-        name: error-logs-${{ github.run_number }}
+        name: cbp501-error-logs-${{ github.run_number }}
         path: |
-          ema_monitor.log
+          cbp501_monitor.log
           *.txt
         retention-days: 7
     
-    - name: 💾 チェックデータの保存
+    - name: 💾 データの保存
       if: always()
       uses: actions/cache/save@v3
       with:
-        path: last_check.txt
-        key: ema-monitor-lastcheck-${{ github.run_number }}
+        path: |
+          execution_counter.txt
+          cbp501_status.txt
+        key: cbp501-monitor-data-${{ github.run_number }}
