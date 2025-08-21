@@ -1,0 +1,165 @@
+name: CBP501三相治験監視
+
+on:
+  schedule:
+    # 15分ごとに実行 (UTC時間)
+    - cron: '*/15 * * * *'
+  
+  # 手動実行も可能にする
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'デバッグモード（詳細ログ出力）'
+        required: false
+        default: 'false'
+        type: boolean
+      force_status_report:
+        description: '強制ステータス報告'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  monitor-cbp501:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 リポジトリのチェックアウト
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Python環境のセットアップ
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 💾 依存関係のキャッシュ
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: 📦 ライブラリのインストール
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🗂️ 前回データの復元
+      uses: actions/cache@v3
+      with:
+        path: |
+          execution_counter.txt
+          cbp501_status.txt
+        key: cbp501-monitor-data-${{ github.run_number }}
+        restore-keys: |
+          cbp501-monitor-data-
+    
+    - name: 🧬 CBP501監視アプリの実行
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        STATUS_REPORT_INTERVAL: '4'  # 4回に1回（1時間ごと）にステータス報告
+        DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
+        FORCE_STATUS_REPORT: ${{ github.event.inputs.force_status_report || 'false' }}
+      run: |
+        echo "🧬 CBP501三相治験監視アプリを開始します..."
+        echo "⏰ 実行時刻: $(date)"
+        echo "🔄 実行回数: ${{ github.run_number }}"
+        echo "🎯 監視対象: CBP501三相治験開始情報"
+        
+        if [ "$DEBUG_MODE" = "true" ]; then
+          echo "🔍 デバッグモードで実行中..."
+          python -u main.py
+        else
+          python main.py
+        fi
+        
+        echo "✅ CBP501監視アプリが完了しました"
+    
+    - name: 📊 実行結果の確認
+      if: always()
+      run: |
+        echo "📋 実行ログの概要:"
+        if [ -f "cbp501_monitor.log" ]; then
+          echo "ログファイルが見つかりました"
+          echo "最後の10行:"
+          tail -10 cbp501_monitor.log
+        else
+          echo "ログファイルが見つかりません"
+        fi
+        
+        if [ -f "execution_counter.txt" ]; then
+          echo "実行回数: $(cat execution_counter.txt)"
+        fi
+        
+        if [ -f "cbp501_status.txt" ]; then
+          echo "CBP501ステータス: $(cat cbp501_status.txt)"
+        fi
+    
+    - name: 🔗 Discord通知テスト（初回実行時）
+      if: github.run_number == 1
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        python -c "
+        import requests, json, os
+        from datetime import datetime
+        
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if webhook_url:
+            payload = {
+                'embeds': [{
+                    'title': '🧬 CBP501監視システム起動完了',
+                    'description': 'CBP501三相治験監視システムが開始されました！\n\n🎯 **監視対象**: CBP501の三相治験開始情報\n⏰ **監視間隔**: 15分ごと\n📊 **報告頻度**: 1時間ごと',
+                    'color': 0x0099FF,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'footer': {
+                        'text': 'CBP501 Phase III Trial Monitor'
+                    },
+                    'fields': [
+                        {
+                            'name': '🔍 検索キーワード',
+                            'value': 'CBP501, Phase III, Phase 3, 三相治験',
+                            'inline': True
+                        },
+                        {
+                            'name': '📡 監視頻度',
+                            'value': '15分ごと',
+                            'inline': True
+                        },
+                        {
+                            'name': '📊 報告タイミング',
+                            'value': '情報発見時＋1時間ごと',
+                            'inline': True
+                        }
+                    ]
+                }]
+            }
+            
+            response = requests.post(webhook_url, json=payload)
+            if response.status_code == 204:
+                print('✅ CBP501監視システム起動通知の送信に成功しました')
+            else:
+                print(f'❌ 起動通知の送信に失敗: {response.status_code}')
+        else:
+            print('❌ Discord Webhook URLが設定されていません')
+        "
+    
+    - name: 📤 ログファイルのアップロード（エラー時）
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: cbp501-error-logs-${{ github.run_number }}
+        path: |
+          cbp501_monitor.log
+          *.txt
+        retention-days: 7
+    
+    - name: 💾 データの保存
+      if: always()
+      uses: actions/cache/save@v3
+      with:
+        path: |
+          execution_counter.txt
+          cbp501_status.txt
+        key: cbp501-monitor-data-${{ github.run_number }}
