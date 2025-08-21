@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-EMA承認監視アプリケーション - メインプログラム
-EMAの新薬承認発表を監視し、Discordへ通知するアプリケーション
+CBP501三相治験監視アプリケーション - メインプログラム
+CBP501の三相治験開始のニュースがあるかどうかのみを判定・報告
 """
 
 import logging
 import sys
 from datetime import datetime
 import os
-from scraper import EMAScraper
-from notifier import DiscordNotifier
+from cbp501_scraper import CBP501Scraper
+from cbp501_notifier import CBP501Notifier
 
 # ログ設定
 logging.basicConfig(
@@ -17,7 +17,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('ema_monitor.log')
+        logging.FileHandler('cbp501_monitor.log')
     ]
 )
 
@@ -35,108 +35,132 @@ def load_environment():
         
         return {
             'discord_webhook': discord_webhook,
-            'check_interval_hours': int(os.getenv('CHECK_INTERVAL_HOURS', '1')),
-            'max_news_items': int(os.getenv('MAX_NEWS_ITEMS', '10'))
+            'status_report_interval': int(os.getenv('STATUS_REPORT_INTERVAL', '4'))
         }
     except Exception as e:
         logger.error(f"環境変数の読み込みに失敗: {e}")
         sys.exit(1)
 
-def load_last_check_data():
-    """前回チェック時のデータを読み込み"""
+def load_execution_counter():
+    """実行回数カウンターを読み込み"""
     try:
-        if os.path.exists('last_check.txt'):
-            with open('last_check.txt', 'r', encoding='utf-8') as f:
-                return f.read().strip()
-        return None
+        if os.path.exists('execution_counter.txt'):
+            with open('execution_counter.txt', 'r', encoding='utf-8') as f:
+                return int(f.read().strip())
+        return 0
     except Exception as e:
-        logger.warning(f"前回チェックデータの読み込みに失敗: {e}")
-        return None
+        logger.warning(f"実行回数カウンターの読み込みに失敗: {e}")
+        return 0
 
-def save_last_check_data(data):
-    """今回のチェックデータを保存"""
+def save_execution_counter(counter):
+    """実行回数カウンターを保存"""
     try:
-        with open('last_check.txt', 'w', encoding='utf-8') as f:
-            f.write(data)
-        logger.info("チェックデータを保存しました")
+        with open('execution_counter.txt', 'w', encoding='utf-8') as f:
+            f.write(str(counter))
+        logger.debug(f"実行回数カウンター保存: {counter}")
     except Exception as e:
-        logger.error(f"チェックデータの保存に失敗: {e}")
+        logger.error(f"実行回数カウンターの保存に失敗: {e}")
+
+def load_last_found_status():
+    """前回のCBP501発見状況を読み込み"""
+    try:
+        if os.path.exists('cbp501_status.txt'):
+            with open('cbp501_status.txt', 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        return "未発見"
+    except Exception as e:
+        logger.warning(f"前回ステータスの読み込みに失敗: {e}")
+        return "未発見"
+
+def save_cbp501_status(status):
+    """CBP501発見状況を保存"""
+    try:
+        with open('cbp501_status.txt', 'w', encoding='utf-8') as f:
+            f.write(status)
+        logger.info(f"CBP501ステータス保存: {status}")
+    except Exception as e:
+        logger.error(f"CBP501ステータスの保存に失敗: {e}")
 
 def main():
     """メイン処理"""
-    logger.info("=== EMA承認監視アプリケーション開始 ===")
+    logger.info("=== CBP501三相治験監視アプリ開始 ===")
     
     # 環境設定読み込み
     config = load_environment()
-    logger.info(f"設定読み込み完了: {config}")
     
-    # 前回チェック時のデータを読み込み
-    last_check_data = load_last_check_data()
-    logger.info(f"前回チェック時データ: {last_check_data}")
+    # 実行回数カウンターを更新
+    execution_counter = load_execution_counter() + 1
+    save_execution_counter(execution_counter)
+    
+    # 前回のCBP501発見状況を読み込み
+    last_status = load_last_found_status()
+    logger.info(f"実行回数: {execution_counter}, 前回CBP501ステータス: {last_status}")
+    
+    # Discord通知インスタンスを作成
+    notifier = CBP501Notifier(config['discord_webhook'])
     
     try:
-        # EMAサイトをスクレイピング
-        scraper = EMAScraper()
-        logger.info("EMAサイトのスクレイピングを開始")
+        # CBP501情報をスクレイピング
+        scraper = CBP501Scraper()
+        logger.info("CBP501三相治験情報の検索を開始")
         
-        # 最新ニュースを取得
-        news_items = scraper.get_latest_news(max_items=config['max_news_items'])
+        # CBP501の三相治験情報を検索
+        cbp501_found, cbp501_details = scraper.search_cbp501_phase3()
         
-        if not news_items:
-            logger.warning("ニュース項目が見つかりませんでした")
-            return
+        current_status = "発見" if cbp501_found else "未発見"
         
-        # 新しいニュースがあるかチェック
-        latest_news_id = news_items[0]['id']
+        # ステータスが変化したか、定期報告時期かを判定
+        status_changed = (current_status != last_status)
+        should_report = (execution_counter % config['status_report_interval'] == 0)
         
-        if last_check_data and latest_news_id == last_check_data:
-            logger.info("新しいニュースはありません")
-            return
-        
-        # 新しいニュースをフィルタリング
-        if last_check_data:
-            # 前回チェック以降の新しいニュースのみを抽出
-            new_items = []
-            for item in news_items:
-                if item['id'] == last_check_data:
-                    break
-                new_items.append(item)
+        if cbp501_found:
+            logger.info("🎉 CBP501三相治験情報を発見！")
+            
+            if status_changed:
+                # 新規発見時の特別通知
+                notifier.send_cbp501_found_notification(cbp501_details)
+                logger.info("CBP501発見の緊急通知を送信しました")
+            elif should_report:
+                # 定期報告（発見継続中）
+                notifier.send_status_report(True, cbp501_details, execution_counter)
+                logger.info("定期報告を送信しました（CBP501発見継続中）")
+            
         else:
-            # 初回実行時は最新の1件のみを通知
-            new_items = news_items[:1]
-        
-        if new_items:
-            logger.info(f"{len(new_items)}件の新しいニュースを発見")
+            logger.info("CBP501三相治験情報は見つかりませんでした")
             
-            # Discord通知
-            notifier = DiscordNotifier(config['discord_webhook'])
-            
-            for item in reversed(new_items):  # 古い順に通知
-                try:
-                    success = notifier.send_approval_notification(item)
-                    if success:
-                        logger.info(f"通知送信成功: {item['title'][:50]}...")
-                    else:
-                        logger.error(f"通知送信失敗: {item['title'][:50]}...")
-                except Exception as e:
-                    logger.error(f"通知送信中にエラー: {e}")
+            if status_changed:
+                # 発見状態から未発見に変化（稀なケース）
+                notifier.send_cbp501_status_change(False, execution_counter)
+                logger.info("CBP501状態変化通知を送信しました（発見→未発見）")
+            elif should_report:
+                # 定期報告（未発見継続中）
+                notifier.send_status_report(False, None, execution_counter)
+                logger.info("定期報告を送信しました（CBP501未発見継続中）")
         
-        # 今回のチェック結果を保存
-        save_last_check_data(latest_news_id)
+        # 今回のステータスを保存
+        save_cbp501_status(current_status)
+        
+        # ログに結果をまとめて出力
+        logger.info(f"監視結果: CBP501三相治験 = {current_status}")
+        logger.info(f"通知送信: {'あり' if (status_changed or should_report) else 'なし'}")
         
     except Exception as e:
         logger.error(f"メイン処理でエラーが発生: {e}")
         
         # エラー通知をDiscordに送信
         try:
-            notifier = DiscordNotifier(config['discord_webhook'])
-            notifier.send_error_notification(str(e))
+            error_message = f"❌ **CBP501監視エラー** (実行回数: {execution_counter})\n\n"
+            error_message += f"エラー内容: {str(e)}\n"
+            error_message += f"⏰ 発生時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            error_message += f"🔄 次回実行: 15分後に自動復旧を試行"
+            
+            notifier.send_error_notification(error_message)
         except:
             pass
         
         sys.exit(1)
     
-    logger.info("=== EMA承認監視アプリケーション終了 ===")
+    logger.info("=== CBP501三相治験監視アプリ終了 ===")
 
 if __name__ == "__main__":
     main()
