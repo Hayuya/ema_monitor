@@ -1,0 +1,145 @@
+name: EMA承認・治験監視アプリ
+
+on:
+  schedule:
+    # 毎時0分に実行 (UTC時間)
+    - cron: '0 * * * *'
+  
+  # 手動実行も可能にする
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'デバッグモード（詳細ログ出力）'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  monitor-ema:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 リポジトリのチェックアウト
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Python環境のセットアップ
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 💾 依存関係のキャッシュ
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: 📦 ライブラリのインストール
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🗂️ 前回チェックデータの復元
+      uses: actions/cache@v3
+      with:
+        path: last_check.txt
+        key: ema-monitor-lastcheck-${{ github.run_number }}
+        restore-keys: |
+          ema-monitor-lastcheck-
+    
+    - name: 🏥 EMA監視アプリの実行
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        CHECK_INTERVAL_HOURS: 1
+        MAX_NEWS_ITEMS: 15
+        DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
+      run: |
+        echo "🚀 EMA監視アプリを開始します..."
+        echo "⏰ 実行時刻: $(date)"
+        
+        if [ "$DEBUG_MODE" = "true" ]; then
+          echo "🔍 デバッグモードで実行中..."
+          python -u main.py
+        else
+          python main.py
+        fi
+        
+        echo "✅ EMA監視アプリが完了しました"
+    
+    - name: 📊 実行結果の確認
+      if: always()
+      run: |
+        echo "📋 実行ログの概要:"
+        if [ -f "ema_monitor.log" ]; then
+          echo "ログファイルが見つかりました"
+          echo "最後の10行:"
+          tail -10 ema_monitor.log
+        else
+          echo "ログファイルが見つかりません"
+        fi
+        
+        if [ -f "last_check.txt" ]; then
+          echo "前回チェックファイル: $(cat last_check.txt)"
+        fi
+    
+    - name: 🔗 Discord通知テスト（初回実行時）
+      if: github.run_number == 1
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        python -c "
+        import requests, json, os
+        from datetime import datetime
+        
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if webhook_url:
+            payload = {
+                'embeds': [{
+                    'title': '🤖 EMA監視アプリ起動完了',
+                    'description': 'GitHub Actionsによる自動監視が開始されました！\n\n📅 毎時0分に新薬承認・治験情報をチェックします\n🎯 cbp501などの治験情報も監視対象です',
+                    'color': 0x00FF00,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'footer': {
+                        'text': 'EMA Monitor - GitHub Actions'
+                    },
+                    'fields': [
+                        {
+                            'name': '🔄 実行間隔',
+                            'value': '1時間ごと',
+                            'inline': True
+                        },
+                        {
+                            'name': '🎯 監視対象',
+                            'value': 'EMA承認情報・治験情報',
+                            'inline': True
+                        }
+                    ]
+                }]
+            }
+            
+            response = requests.post(webhook_url, json=payload)
+            if response.status_code == 204:
+                print('✅ 起動通知の送信に成功しました')
+            else:
+                print(f'❌ 起動通知の送信に失敗: {response.status_code}')
+        else:
+            print('❌ Discord Webhook URLが設定されていません')
+        "
+    
+    - name: 📤 ログファイルのアップロード（エラー時）
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: error-logs-${{ github.run_number }}
+        path: |
+          ema_monitor.log
+          *.txt
+        retention-days: 7
+    
+    - name: 💾 チェックデータの保存
+      if: always()
+      uses: actions/cache/save@v3
+      with:
+        path: last_check.txt
+        key: ema-monitor-lastcheck-${{ github.run_number }}
