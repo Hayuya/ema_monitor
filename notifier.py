@@ -7,6 +7,7 @@ EMA承認監視アプリケーション - Discord通知処理
 import requests
 import logging
 import json
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,26 @@ class DiscordNotifier:
             
             # 承認関連の場合は特別なマークを追加
             if news_item['is_approval_related']:
-                embed["fields"].append({
-                    "name": "🎯 種別",
-                    "value": "新薬承認関連",
-                    "inline": True
-                })
+                # 治験情報かどうかをチェック
+                is_clinical_trial = any(keyword in title.lower() for keyword in [
+                    'phase', 'trial', 'study', 'clinical', 'cbp501', 
+                    'investigational', 'protocol'
+                ])
+                
+                if is_clinical_trial:
+                    embed["fields"].append({
+                        "name": "🧪 種別",
+                        "value": "治験・臨床試験情報",
+                        "inline": True
+                    })
+                else:
+                    embed["fields"].append({
+                        "name": "🎯 種別",
+                        "value": "新薬承認関連",
+                        "inline": True
+                    })
             
-            # キーワード抽出
+            # キーワード抽出（治験関連も含む）
             keywords = self._extract_keywords(title + " " + description)
             if keywords:
                 embed["fields"].append({
@@ -106,9 +120,16 @@ class DiscordNotifier:
                 "embeds": [embed]
             }
             
-            # 承認関連の場合は@everyoneを追加
+            # 承認・治験関連の場合は@everyoneを追加
             if news_item['is_approval_related']:
-                payload["content"] = "🚨 **新薬承認情報** 🚨"
+                is_clinical_trial = any(keyword in title.lower() for keyword in [
+                    'phase', 'trial', 'study', 'clinical', 'cbp501'
+                ])
+                
+                if is_clinical_trial:
+                    payload["content"] = "🧪 **治験・臨床試験情報** 🧪"
+                else:
+                    payload["content"] = "🚨 **新薬承認情報** 🚨"
             
             return self._send_webhook(payload)
         
@@ -164,30 +185,42 @@ class DiscordNotifier:
             return False
     
     def _extract_keywords(self, text):
-        """テキストから重要なキーワードを抽出"""
+        """テキストから重要なキーワードを抽出（治験情報対応版）"""
         try:
             text_lower = text.lower()
+            
+            # 治験・臨床試験関連キーワード
+            clinical_keywords = [
+                'phase i', 'phase ii', 'phase iii', 'phase 1', 'phase 2', 'phase 3',
+                'clinical trial', 'clinical study', 'investigational', 'protocol',
+                'cbp501', 'first-in-human', 'dose-escalation', 'pivotal',
+                'enrollment', 'endpoint', 'efficacy', 'safety'
+            ]
             
             # 医薬品関連キーワード
             drug_keywords = [
                 'vaccine', 'treatment', 'therapy', 'medicine', 'drug',
                 'cancer', 'oncology', 'diabetes', 'cardiovascular',
-                'antibiotic', 'antiviral', 'biosimilar', 'generic'
+                'antibiotic', 'antiviral', 'biosimilar', 'generic',
+                'compound', 'candidate', 'novel therapy'
             ]
             
             # 承認関連キーワード
             approval_keywords = [
                 'approved', 'authorisation', 'recommendation', 'chmp',
-                'positive opinion', 'marketing authorisation', 'conditional'
+                'positive opinion', 'marketing authorisation', 'conditional',
+                'breakthrough', 'fast track', 'priority review',
+                'orphan designation', 'scientific advice'
             ]
             
             # 企業名キーワード
             company_keywords = [
                 'pfizer', 'roche', 'novartis', 'gsk', 'astrazeneca',
-                'merck', 'sanofi', 'johnson', 'bayer', 'takeda'
+                'merck', 'sanofi', 'johnson', 'bayer', 'takeda',
+                'moderna', 'biogen', 'gilead', 'amgen'
             ]
             
-            all_keywords = drug_keywords + approval_keywords + company_keywords
+            all_keywords = clinical_keywords + drug_keywords + approval_keywords + company_keywords
             
             found_keywords = []
             for keyword in all_keywords:

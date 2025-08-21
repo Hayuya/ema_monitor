@@ -265,7 +265,7 @@ class EMAScraper:
             return None
     
     def get_latest_news(self, max_items=10):
-        """最新ニュースを取得"""
+        """最新ニュースを取得（治験情報重視版）"""
         try:
             # メインニュースページを取得
             response = self._make_request(self.news_url)
@@ -276,16 +276,39 @@ class EMAScraper:
             # ニュース項目を抽出
             news_items = self._extract_news_items(soup)
             
-            # 承認関連のニュースを優先してフィルタリング
-            approval_news = [item for item in news_items if item['is_approval_related']]
+            # 治験情報も取得
+            try:
+                logger.info("治験情報の取得を開始")
+                trial_updates = self.get_clinical_trial_updates()
+                
+                # 治験情報をニュース形式に変換
+                for trial in trial_updates:
+                    trial_item = {
+                        'id': f"trial_{hash(trial['title'] + trial['url'])}",
+                        'title': trial['title'],
+                        'link': trial['url'],
+                        'date': "",
+                        'description': f"治験・臨床試験情報 (ソース: {trial['source']})",
+                        'is_approval_related': True  # 治験情報は常に重要として扱う
+                    }
+                    news_items.append(trial_item)
+            except Exception as e:
+                logger.warning(f"治験情報取得でエラー: {e}")
+            
+            # 承認関連・治験関連のニュースを優先してフィルタリング
+            approval_and_trial_news = [item for item in news_items if item['is_approval_related']]
             other_news = [item for item in news_items if not item['is_approval_related']]
             
-            # 承認関連ニュースを優先し、残りを追加
-            filtered_news = approval_news + other_news
+            # 承認・治験関連ニュースを優先し、残りを追加
+            filtered_news = approval_and_trial_news + other_news
             filtered_news = filtered_news[:max_items]
             
-            logger.info(f"取得完了: 全{len(news_items)}件中、承認関連{len(approval_news)}件、その他{len(other_news)}件")
+            logger.info(f"取得完了: 全{len(news_items)}件中、承認・治験関連{len(approval_and_trial_news)}件、その他{len(other_news)}件")
             logger.info(f"返却: {len(filtered_news)}件")
+            
+            # 取得したニュースの詳細をログ出力
+            for i, item in enumerate(filtered_news[:5]):
+                logger.info(f"ニュース {i+1}: {item['title'][:70]}... (治験・承認関連: {item['is_approval_related']})")
             
             return filtered_news
         
