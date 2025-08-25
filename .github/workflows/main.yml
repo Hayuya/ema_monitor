@@ -66,9 +66,14 @@ jobs:
         python main.py
         echo "✅ CBP501監視アプリが完了しました"
 
+    - name: 🕒 現在時刻(UTC)を取得
+      if: github.event_name == 'schedule'
+      id: date
+      run: echo "hour=$(date -u +'%H')" >> $GITHUB_OUTPUT
+
     - name: 📝 JST 21:00 定期報告
       # JST 21:00 (UTC 12:00) にのみこのステップを実行
-      if: github.event_name == 'schedule' && format('{0:HH}', utcNow) == '12'
+      if: github.event_name == 'schedule' && steps.date.outputs.hour == '12'
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
