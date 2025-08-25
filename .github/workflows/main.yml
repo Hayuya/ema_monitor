@@ -1,9 +1,13 @@
+# GitHub Actions Workflow: CBP501 Phase III Trial Monitoring
+
 name: CBP501三相治験監視
 
 on:
   schedule:
-    # 毎時0分に実行 (UTC時間)
+    # [変更] 毎時0分に監視を実行 (UTC)
     - cron: '0 * * * *'
+    # [追加] 毎日21:00 (JST) に定期報告を実行 (UTC 12:00)
+    - cron: '0 12 * * *'
 
   # 手動実行も可能にする
   workflow_dispatch:
@@ -58,71 +62,46 @@ jobs:
     - name: 🧬 CBP501監視アプリの実行
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        # [削除] STATUS_REPORT_INTERVALは定期報告ステップに移行したため削除
         DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
-        # main.py側で変更を検知した場合のみ通知するように改修することを想定
+        FORCE_STATUS_REPORT: ${{ github.event.inputs.force_status_report || 'false' }}
       run: |
         echo "🧬 CBP501三相治験監視アプリを開始します..."
         echo "⏰ 実行時刻: $(date)"
-        python main.py
+        echo "🔄 実行回数: ${{ github.run_number }}"
+        echo "🎯 監視対象: CBP501三相治験開始情報"
+        
+        if [ "$DEBUG_MODE" = "true" ]; then
+          echo "🔍 デバッグモードで実行中..."
+          python -u main.py
+        else
+          python main.py
+        fi
+        
         echo "✅ CBP501監視アプリが完了しました"
-
-    - name: 🕒 現在時刻(UTC)を取得
-      if: github.event_name == 'schedule'
-      id: date
-      run: echo "hour=$(date -u +'%H')" >> $GITHUB_OUTPUT
-
-    - name: 📝 JST 21:00 定期報告
-      # JST 21:00 (UTC 12:00) にのみこのステップを実行
-      if: github.event_name == 'schedule' && steps.date.outputs.hour == '12'
-      env:
-        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      run: |
-        python -c "
-        import requests, json, os
-        from datetime import datetime, timedelta, timezone
-
-        JST = timezone(timedelta(hours=+9))
-        now_jst = datetime.now(JST)
-
-        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
-        if not webhook_url:
-            print('❌ Discord Webhook URLが設定されていません')
-            exit(1)
-
-        payload = {
-            'embeds': [{
-                'title': '🔬 CBP501監視 | 定期報告',
-                'description': f'**{now_jst.strftime(\"%Y年%m月%d日 %H:%M\")}** 時点\nシステムは正常に稼働中です。',
-                'color': 0x3498DB, # Calm Blue
-                'footer': {
-                    'text': 'CBP501 Phase III Trial Monitor'
-                },
-                'timestamp': datetime.utcnow().isoformat()
-            }]
-        }
-        response = requests.post(webhook_url, json=payload)
-        if response.status_code == 204:
-            print('✅ 定期報告の送信に成功しました')
-        else:
-            print(f'❌ 定期報告の送信に失敗: {response.status_code}')
-            print(response.text)
-        "
 
     - name: 📊 実行結果の確認
       if: always()
       run: |
         echo "📋 実行ログの概要:"
         if [ -f "cbp501_monitor.log" ]; then
+          echo "ログファイルが見つかりました"
+          echo "最後の10行:"
           tail -10 cbp501_monitor.log
+        else
+          echo "ログファイルが見つかりません"
         fi
+        
         if [ -f "execution_counter.txt" ]; then
           echo "実行回数: $(cat execution_counter.txt)"
         fi
+        
         if [ -f "cbp501_status.txt" ]; then
           echo "CBP501ステータス: $(cat cbp501_status.txt)"
         fi
 
-    - name: 🔗 Discord起動通知（初回実行時）
+    - name: '🚀 起動通知 (初回実行時)'
+      # [変更] メッセージをシンプル化
       if: github.run_number == 1
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -130,27 +109,59 @@ jobs:
         python -c "
         import requests, json, os
         from datetime import datetime
-
         webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
         if webhook_url:
             payload = {
                 'embeds': [{
-                    'title': '✅ CBP501監視システム | 起動完了',
-                    'description': 'CBP501三相治験の監視を開始しました。\n更新を検知した場合、またはJST 21:00に定期報告を送信します。',
-                    'color': 0x2ECC71, # Green
+                    'title': '✅ CBP501監視システム 起動完了',
+                    'description': 'CBP501三相治験の監視を開始しました。\nステータス更新時に通知します。',
+                    'color': 0x2ECC71,
                     'timestamp': datetime.utcnow().isoformat(),
-                    'footer': {
-                        'text': 'CBP501 Phase III Trial Monitor'
-                    }
+                    'footer': { 'text': 'CBP501 Monitor' }
                 }]
             }
+            requests.post(webhook_url, json=payload)
+        "
+
+    - name: '📜 定期ステータス報告 (JST 21:00)'
+      # [追加] 毎日定時にステータスを報告するステップ
+      if: github.event.schedule == '0 12 * * *'
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        python -c "
+        import requests, json, os
+        from datetime import datetime, timezone, timedelta
+
+        # JSTタイムゾーンを定義
+        JST = timezone(timedelta(hours=+9))
+
+        # ファイルから現在のステータスを読み込む
+        try:
+            with open('cbp501_status.txt', 'r', encoding='utf-8') as f:
+                status = f.read().strip()
+        except FileNotFoundError:
+            status = 'ステータス不明'
+
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if webhook_url:
+            embed = {
+                'title': '🌙 CBP501監視 定期報告',
+                'description': f'**治験ステータス: `{status}`**\n\n引き続き監視を継続します。',
+                'color': 0x3498DB,
+                'timestamp': datetime.utcnow().isoformat(),
+                'footer': {
+                    'text': f'CBP501 Monitor | {datetime.now(JST).strftime(\"%Y-%m-%d %H:%M\")} JST'
+                }
+            }
+            payload = {'embeds': [embed]}
             response = requests.post(webhook_url, json=payload)
-            if response.status_code == 204:
-                print('✅ 起動通知の送信に成功しました')
+            if 200 <= response.status_code < 300:
+                print('✅ 定期報告を送信しました。')
             else:
-                print(f'❌ 起動通知の送信に失敗: {response.status_code}')
+                print(f'❌ 定期報告の送信に失敗: {response.status_code}, {response.text}')
         else:
-            print('❌ Discord Webhook URLが設定されていません')
+            print('❌ Discord Webhook URLが設定されていません。')
         "
 
     - name: 📤 ログファイルのアップロード（エラー時）
