@@ -65,17 +65,20 @@ def main():
     config = load_environment()
     notifier = CBP501Notifier(config['discord_webhook'])
     
-    # 実行回数を読み込む
-    execution_count = int(load_last_run_data('execution_counter.txt') or 0) + 1
-
-    # 初回実行かどうかを判定
-    is_first_run = execution_count == 1
-    if is_first_run:
-        logger.info("初回実行です。")
-        notifier.send_status_report(False, [], 0) # 初回は引数を固定値で渡す
-
-    # 治験情報のスクレイピング
+    # 実行回数を読み込んで1加算
     try:
+        execution_count = int(load_last_run_data('execution_counter.txt') or 0) + 1
+    except ValueError:
+        execution_count = 1
+    
+    # 初回実行の場合、ステータスレポートを送信
+    if execution_count == 1:
+        logger.info("初回実行です。")
+        # 引数を揃えて初回レポートを送信
+        notifier.send_status_report(False, [], 0)
+
+    try:
+        # 治験情報のスクレイピング
         scraper = CBP501Scraper()
         logger.info("CBP501三相治験情報の検索を開始")
         cbp501_found, cbp501_details = scraper.search_cbp501_phase3()
@@ -99,14 +102,15 @@ def main():
 
         if now_jst.hour == 21 and last_survival_check_date != today_str:
             logger.info("生存確認通知を送信します。")
+            # 修正箇所：引数を正しく渡す
             notifier.send_status_report(cbp501_found, cbp501_details, execution_count)
             save_run_data('last_survival_check.txt', today_str)
 
     except Exception as e:
-        logger.error(f"メイン処理でエラーが発生: {e}")
+        logger.error(f"メイン処理でエラーが発生: {e}", exc_info=True)
         try:
             error_message = f"❌ **CBP501監視エラー**\n\n"
-            error_message += f"エラー内容: {str(e)}\n"
+            error_message += f"エラー内容: `{str(e)}`\n"
             error_message += f"⏰ 発生時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             notifier.send_error_notification(error_message)
         except Exception as notify_error:
@@ -115,7 +119,7 @@ def main():
     finally:
         # 実行回数を保存
         save_run_data('execution_counter.txt', execution_count)
-
+    
     logger.info("=== CBP501三相治験監視アプリ終了 ===")
 
 if __name__ == "__main__":
