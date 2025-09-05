@@ -6,7 +6,7 @@ CBP501の三相治験開始のニュースがあるかどうかのみを判定�
 
 import logging
 import sys
-from datetime import datetime, time
+from datetime import datetime
 import os
 import pytz
 from cbp501_scraper import CBP501Scraper
@@ -65,12 +65,14 @@ def main():
     config = load_environment()
     notifier = CBP501Notifier(config['discord_webhook'])
     
+    # 実行回数を読み込む
+    execution_count = int(load_last_run_data('execution_counter.txt') or 0) + 1
+
     # 初回実行かどうかを判定
-    is_first_run = not os.path.exists('execution_counter.txt')
+    is_first_run = execution_count == 1
     if is_first_run:
         logger.info("初回実行です。")
-        notifier.send_status_report("CBP501監視アプリケーションを起動しました。")
-        save_run_data('execution_counter.txt', '1')
+        notifier.send_status_report(False, [], 0) # 初回は引数を固定値で渡す
 
     # 治験情報のスクレイピング
     try:
@@ -97,7 +99,7 @@ def main():
 
         if now_jst.hour == 21 and last_survival_check_date != today_str:
             logger.info("生存確認通知を送信します。")
-            notifier.send_status_report(f"【生存確認】CBP501監視アプリは正常に稼働中です (現在ステータス: {current_status})")
+            notifier.send_status_report(cbp501_found, cbp501_details, execution_count)
             save_run_data('last_survival_check.txt', today_str)
 
     except Exception as e:
@@ -110,7 +112,10 @@ def main():
         except Exception as notify_error:
             logger.error(f"エラー通知の送信に失敗: {notify_error}")
         sys.exit(1)
-    
+    finally:
+        # 実行回数を保存
+        save_run_data('execution_counter.txt', execution_count)
+
     logger.info("=== CBP501三相治験監視アプリ終了 ===")
 
 if __name__ == "__main__":
